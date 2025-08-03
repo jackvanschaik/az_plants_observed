@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>iNaturalist Native Plant Observations</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
+    th { background-color: #f0f0f0; }
+    tr.observed { background-color: #e0ffe0; }
+  </style>
+</head>
+<body>
+
+  <h1>iNaturalist Native Plant Species in Arizona</h1>
+  <p>Highlighting species observed by user <strong>jackvanschaik</strong>.</p>
+  <p id="summary"></p>
+  <div id="status">Loading data...</div>
+  <table id="results" style="display:none;">
+    <thead>
+      <tr>
+        <th>Taxon ID</th>
+        <th>Name</th>
+        <th>Observation Count</th>
+        <th>Observed by User</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const USER_ID = 'jackvanschaik';
+
+    async function getUserPlantTaxa(userId) {
+      let taxonIds = new Set();
+      let page = 1;
+      let perPage = 100;
+      let hasMore = true;
+
+      while (hasMore) {
+        const url = `https://api.inaturalist.org/v1/observations?user_id=${userId}&iconic_taxa=Plantae&page=${page}&per_page=${perPage}`;
+        const response = await fetch(url);
+        const data = await response.json();
+
+        data.results.forEach(obs => {
+          if (obs.taxon && obs.taxon.id) {
+            taxonIds.add(obs.taxon.id);
+          }
+        });
+
+        hasMore = data.results.length === perPage;
+        page += 1;
+      }
+
+      return taxonIds;
+    }
+
+    async function getNativePlantSpeciesCountsInAZ() {
+      let page = 1;
+      let perPage = 100;
+      let hasMore = true;
+      const results = [];
+
+      while (hasMore) {
+        const url = `https://api.inaturalist.org/v1/observations/species_counts?place_id=40&iconic_taxa=Plantae&introduced=false&verifiable=true&page=${page}&per_page=${perPage}`;
+        const response = await fetch(url);
+        const data = await response.json();
+
+        results.push(...data.results);
+        hasMore = data.results.length === perPage;
+        page += 1;
+      }
+
+      return results.map(item => ({
+        id: item.taxon.id,
+        name: item.taxon.name,
+        count: item.count
+      }));
+    }
+
+    async function main() {
+      const statusDiv = document.getElementById('status');
+      const table = document.getElementById('results');
+      const tbody = table.querySelector('tbody');
+      const summary = document.getElementById('summary');
+
+      statusDiv.textContent = 'Fetching your observations...';
+      const userTaxa = await getUserPlantTaxa(USER_ID);
+
+      statusDiv.textContent = 'Fetching native plant species in Arizona...';
+      const speciesList = await getNativePlantSpeciesCountsInAZ();
+
+      const numObserved = speciesList.filter(species => userTaxa.has(species.id)).length;
+      const percentObserved = ((numObserved / speciesList.length) * 100).toFixed(1);
+      summary.textContent =
+        `You've observed ${numObserved} of ${speciesList.length} native plant species in Arizona (${percentObserved}%)`;
+
+      statusDiv.style.display = 'none';
+      table.style.display = 'table';
+
+      speciesList.forEach(species => {
+        const tr = document.createElement('tr');
+        if (userTaxa.has(species.id)) {
+          tr.classList.add('observed');
+        }
+
+        tr.innerHTML = `
+          <td>${species.id}</td>
+          <td>${species.name}</td>
+          <td>${species.count}</td>
+          <td>${userTaxa.has(species.id) ? '✅ Yes' : '❌ No'}</td>
+        `;
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    main();
+  </script>
+
+</body>
+</html>
