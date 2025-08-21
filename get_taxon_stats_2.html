@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    ul { list-style-type: none; padding-left: 20px; }
+    li { cursor: pointer; margin: 4px 0; }
+    .leaf { cursor: default; margin-left: 10px; }
+    .leaf img { max-width: 100px; display: block; margin-top: 4px; }
+    #inputValue {
+        width: 400px;   /* adjust as needed */
+        font-size: 16px; /* optional: make text easier to read */
+    }
+
+  ul {
+    list-style-type: none;      /* remove default bullets */
+    margin: 0;
+    padding-left: 20px;         /* base indentation */
+    border-left: 1px solid #ccc; /* vertical line showing hierarchy */
+  }
+
+  li {
+    margin: 4px 0;
+    padding-left: 8px;          /* space from vertical line */
+    position: relative;
+  }
+
+  li::before {
+    content: "";
+    position: absolute;
+    left: -9px;                 /* align with vertical line */
+    top: 10px;
+    width: 8px;
+    height: 1px;
+    background: #ccc;            /* horizontal connector line */
+  }
+
+  li span.key {
+    font-weight: bold;           /* distinguish keys from leaf values */
+  }
+
+  li.leaf {
+    color: #006400;              /* darker green for leaf nodes */
+    font-style: italic;
+  }
+
+  li.leaf img {
+    max-width: 80px;
+    display: block;
+    margin-top: 4px;
+    margin-left: 10px;
+  }
+  </style>
+</head>
+<body>
+  <h2>Nested Taxa Tree</h2>
+  <form id="dataForm">
+    <label for="inputValue">Enter iNat Explore Query</label>
+    <input type="text" id="inputValue" name="inputValue" value="d1=2024-08-01&d2=2024-08-31&nelat=32.459631198074014&nelng=-110.6756702678679&quality_grade=research&subview=map&swlat=32.33614075266855&swlng=-110.82673227958665&taxon_id=47604&view=species&iconic_taxa=Plantae" required>
+    <button type="submit">Build Tree</button>
+  </form>
+
+  <div id="tree"></div>
+
+  <script>
+    // get all the observations from a given iNat explore query
+    async function fetchAllTaxa(queryString) {
+      let page = 1;
+      const perPage = 200; // max allowed
+      let allResults = [];
+      let keepGoing = true;
+
+      while (keepGoing) {
+        const url = `https://www.inaturalist.org/observations.json?${queryString}&per_page=${perPage}&page=${page}`;
+        console.log("Fetching:", url);
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        
+        if (data && data.length > 0) {
+          allResults = allResults.concat(data);
+          page++;
+        } else {
+          keepGoing = false;
+        }
+      }
+
+      return allResults;
+    }
+
+    // get taxa details for a list of taxa IDs
+    // main goal of this is to get scientific name and image url
+    async function getTaxaDetails(ids) {
+      const chunkSize = 30;
+      const results = [];
+
+      // break into chunks of 30
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize).join(",");
+        const url = `https://api.inaturalist.org/v1/taxa/${chunk}`;
+        console.log(url)
+
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          throw new Error(`Request failed: ${resp.status}`);
+        }
+        const data = await resp.json();
+
+        results.push(...data.results);
+      }
+
+      const d_res = {};
+      for (const item of results) {
+          const d = {};
+          d["name"] = item.name;
+          d["img"] = item.taxon_photos[0].photo.url;
+          d["inat"] = `https://www.inaturalist.org/taxa/${item.id}`;
+          d_res[item.id] = d;
+      }
+      return d_res;
+    }
+
+    // gets unique taxa in a list, because a search result may return duplicates
+    function uniqueByName(list) {
+      const seen = new Set();
+      return list.filter(item => {
+        if (seen.has(item.name)) {
+          return false;   // already seen → skip
+        }
+        seen.add(item.name);
+        return true;      // first time → keep
+      });
+    }
+
+    // build taxa tree given a list of taxa returned from `fetchAllTaxa`
+    // 1.) Gets unique taxa in the list
+    // 2.) Gets additional taxa info for names and image urls
+    // 3.) Iteratively builds tree as a dictionary
+    async function buildTaxaTree(taxa_list) {
+      // first, get a unique taxa list
+      taxa_list_2 = taxa_list
+        .filter(y => y.taxon.rank == "species")
+        .map(y => ({name:y.taxon.name, id:y.taxon.id, ancestry:y.taxon.ancestry}))
+      taxa_list_3 =  uniqueByName(taxa_list_2);
+      taxa_lead_ids = taxa_list_3.map(y => y.id)
+
+      // pull out taxa names and paths
+      paths = taxa_list_3.map(y => y.ancestry);
+      
+      // create a mapping from taxa IDs to scientific names
+      const flat_paths = [...new Set(paths.flatMap(path => path.split("/")))];
+      id_to_data = await getTaxaDetails([...flat_paths, ...taxa_lead_ids]);
+      names = taxa_list_3.map(y => (id_to_data[parseInt(y.id)]));
+
+      // start building out dictionary
+      const root = {};
+
+      paths.forEach((path, i) => {
+        const parts = path.split("/").map(y => id_to_data[parseInt(y)]["name"]);
+        let current = root;
+
+        parts.forEach((part, idx) => {
+          if (idx === parts.length - 1) {
+            // leaf → store the name
+            current[part] = names[i];
+          } else {
+            // intermediate node → ensure nested object
+            if (!current[part]) {
+              current[part] = {};
+            }
+            current = current[part];
+          }
+        });
+      });
+
+      return root;
+    }
+
+    // helper function to get file extension
+    function getFileExtension(filename) {
+        const parts = filename.split('.');
+        return parts.pop();
+    }
+
+    // this builds out the nested HTML object to display taxa
+    function buildList(obj) {
+      const ul = document.createElement("ul");
+
+      for (const key in obj) {
+        const li = document.createElement("li");
+
+        if (typeof obj[key] === "object") {
+          // intermediate node
+          li.textContent = key;
+          const child = buildList(obj[key]);
+          child.style.display = "block"; // collapsed initially
+          li.appendChild(child);
+
+          li.addEventListener("click", (e) => {
+            e.stopPropagation();
+            child.style.display = child.style.display === "none" ? "block" : "none";
+          });
+        } else {
+          // leaf node
+          li.classList.add("leaf");
+          if (key == "name") {
+            li.textContent = obj[key];
+          }
+          else if (key == "inat") {
+            const a = document.createElement("a");
+            a.href = obj[key]; 
+            a.textContent = "iNat Link";
+            li.appendChild(a);
+          }
+          else {
+            const img = document.createElement("img");
+            img.src = obj[key]; 
+            img.alt = obj[key];
+            li.appendChild(img);
+          }
+
+        }
+
+        ul.appendChild(li);
+      }
+
+      return ul;
+    }
+
+    // Make event handler async to await getData
+    document.getElementById("dataForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const inputValue = document.getElementById("inputValue").value;
+
+      // Await async data fetch
+      const taxa_list = await fetchAllTaxa(inputValue);
+      const taxa_tree = await buildTaxaTree(taxa_list)
+
+      // Clear old tree
+      const treeDiv = document.getElementById("tree");
+      treeDiv.innerHTML = "";
+
+      // Render new tree
+      treeDiv.appendChild(buildList(taxa_tree));
+    });
+  </script>
+</body>
+</html>
